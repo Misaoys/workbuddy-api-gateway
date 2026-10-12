@@ -60,10 +60,26 @@ export async function listBuiltinModels(env) {
 }
 
 /** 供 worker 调用内置模型（只支持 stream:true） */
-export async function createChatStream(env, { model, messages }) {
+export async function createChatStream(env, params) {
+  const options = {}
+  for (const key of ['model', 'messages', 'tools', 'tool_choice', 'parallel_tool_calls',
+    'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'stop',
+    'presence_penalty', 'frequency_penalty', 'seed', 'response_format', 'reasoning_effort']) {
+    if (params[key] !== undefined) options[key] = params[key]
+  }
+  // ModelHub rejects named tool_choice objects and does not enforce "none".
+  // Keep the same semantics using the supported string choice and tool set.
+  if (options.tool_choice?.type === 'function') {
+    const name = options.tool_choice.function?.name
+    options.tools = (options.tools || []).filter((tool) => tool.function?.name === name)
+    if (!options.tools.length) throw new Error('Selected tool is not present in tools')
+    options.tool_choice = 'required'
+  } else if (options.tool_choice === 'none') {
+    delete options.tools
+    delete options.parallel_tool_calls
+  }
   return getClient(env).llm.chat.completions.create({
-    model,
-    messages,
+    ...options,
     stream: true,
     stream_options: { include_usage: true },
   })

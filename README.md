@@ -11,6 +11,7 @@
 - **自带后台**：Web 管理界面 —— API Key 创建/禁用、用量统计、上游配置，无需重建即可生效
 - **多 Key 管理**：每把 Key 独立计量，支持随时吊销
 - **协议自动识别**：请求落到 `/v1` 根路径也能按请求体特征自动判断走哪套协议
+- **原生工具调用**：保留 OpenAI `tools` / `tool_calls` / `tool_call_id`，转换 Anthropic `tool_use` / `tool_result`，支持流式与非流式多工具返回
 - **四种 Key 传递方式**：`Authorization` 头 / `x-api-key` 头 / `?key=` query / `/<key>` 路径
 - **WAF 无害化**：自动对代码内容做编码处理，绕过上游安全网关的特征拦截（见下文"踩坑经验"）
 - **零密钥推理服务**：模型调用走云 SDK，不依赖外部 API Key
@@ -214,8 +215,13 @@ Anthropic 协议里 `content` 既可能是字符串也可能是内容块数组�
 `tool_result`）。只处理一种会留下稳定的漏网路径。本项目在最终出口统一兜底。
 
 **3. 工具块不能丢**
-`tool_use` / `tool_result` 块如果被过滤掉，消息会变成空内容被模型 API 拒绝（报 400/502）。
-本项目把工具块转成文本表示后再发送。
+工具定义和调用历史必须保留为结构化字段，不能变成普通文本。否则 DeepSeek 等模型可能输出
+`<｜DSML｜...>` 文本，客户端无法执行工具。网关将 Anthropic 工具历史转换成 OpenAI
+原生工具消息，并把上游工具调用转换回 `tool_use` 块和 `input_json_delta` SSE 事件。
+工具参数在完整组装、验证后才发送给 Anthropic 客户端，普通文本仍逐片发送。
+
+WorkBuddy ModelHub 当前拒绝指定工具的 `tool_choice` 对象；内置上游会只保留指定工具并使用
+`required`。`none` 会移除工具定义，避免上游忽略它。HTTP 上游仍按原协议透传。
 
 **4. 非流式请求有 60 秒硬超时**
 若中间还有边缘代理，长回答可能被截断。本项目对非流式做了 45 秒主动收口，返回可读错误；
@@ -230,6 +236,17 @@ isolate 会复用、时钟在请求间被冻结/重置，跨请求的 `Date.now(
   按主包版本号一起 `npm install --save-optional` 即可
 - `wrangler.toml` 里 `routes` 要写在 `[assets]` 之前（TOML 键归属最近的 section 头）
 - 代理环境下记得清空 `https_proxy` 再执行 wrangler 命令
+
+## 验证
+
+```bash
+npm ci
+npm test
+npx wrangler deploy --dry-run
+```
+
+回归测试通过实际 Worker 路由和官方 SDK，在模拟数据平面上检查工具定义、调用历史、
+参数分片、多工具返回、JSON / SSE、工具选择和 WAF 文本编码。线上模型行为仍需部署后验证。
 
 ## 📄 License
 

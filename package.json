@@ -7,6 +7,7 @@
   "license": "MIT",
   "keywords": ["gateway", "openai", "anthropic", "claude-code", "cloudflare-workers", "api-proxy"],
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },

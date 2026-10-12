@@ -11,7 +11,8 @@
 import { Hono } from 'hono'
 import { extractKey, isWellFormedKey, hashApiKey } from './keys.js'
 import { resolveKey, logUsage, listBuiltinModels, createChatStream } from './cloud.js'
-import { forward, safeJson, llmErrorResponse, asciiHeader, SSE_HEADERS, sanitizeContent } from './gateway.js'
+import { forward, safeJson, llmErrorResponse, asciiHeader, SSE_HEADERS, normalizeMessages } from './gateway.js'
+import { anthropicRequest, ToolCalls, anthropicStop } from './protocol.js'
 
 const app = new Hono()
 const counters = { total: 0, ok: 0, rejected: 0, failed: 0 }
@@ -167,59 +168,6 @@ function isAnthropicShape(parsed) {
   return parsed.system !== undefined || Array.isArray(parsed.messages?.[0]?.content)
 }
 
-/**
- * Anthropic 内容块 → 文本。
- * Claude Code 的真实对话包含 tool_use / tool_result 块，只保留 text 会让部分消息
- * 变成空内容被云 API 拒绝，因此工具块转成文本表示。
- * 所有内容经 sanitizeContent 无害化，绕开云模型服务前置腾讯 WAF 的特征拦截。
- */
-function blockToText(b) {
-  if (!b || typeof b !== 'object') return ''
-  if (b.type === 'text') return sanitizeContent(b.text || '')
-  if (b.type === 'tool_use') {
-    let args = JSON.stringify(b.input ?? {})
-    if (args.length > 200) args = args.slice(0, 200) + '…'
-    return sanitizeContent(`[调用工具 ${b.name}(${args})]`)
-  }
-  if (b.type === 'tool_result') {
-    const c = b.content
-    let text = Array.isArray(c)
-      ? c.filter((x) => x?.type === 'text').map((x) => x?.text || '').join('\n')
-      : String(c ?? '')
-    if (!text) return '[工具结果为空]'
-    if (text.length > 24_000) text = text.slice(0, 24_000) + '\n…(截断)'
-    return sanitizeContent(`[工具结果]\n${text}`)
-  }
-  if (b.type === 'image') return '[图片]'
-  if (b.type === 'thinking') return ''
-  return ''
-}
-
-function anthropicToMessages(parsed) {
-  const msgs = []
-  let sys = parsed?.system
-  if (Array.isArray(sys)) sys = sys.map((b) => b?.text || '').join('\n')
-  // system 也做无害化：Claude Code 的 system-reminder 常附带文件内容，同样会触发 WAF
-  if (sys) msgs.push({ role: 'system', content: sanitizeContent(sys) })
-  for (const m of parsed?.messages || []) {
-    if (m.role !== 'user' && m.role !== 'assistant') continue
-    let content = m.content
-    if (Array.isArray(content)) {
-      content = content.map(blockToText).filter((s) => s !== '').join('\n')
-    }
-    if (typeof content !== 'string') content = content == null ? '' : JSON.stringify(content)
-    // 空内容会被云 API 拒绝，用占位符兜底
-    if (!content.trim()) content = '(无文本内容)'
-    msgs.push({ role: m.role, content })
-  }
-  if (msgs.length === 0 || msgs[0].role !== 'system') {
-    msgs.unshift({ role: 'system', content: 'You are Claude Code, a helpful assistant.' })
-  }
-  // 兜底：无论内容走的是数组块还是字符串分支，最终统一再过一遍无害化。
-  // （字符串 content 曾漏网 —— 客户端直接发 content: "eval(x)" 时没被编码，导致 WAF 拦截）
-  return msgs.map((m) => ({ ...m, content: sanitizeContent(m.content) }))
-}
-
 /** 上游错误摘要：HTML 一律归类为 WAF 拦截并带上长度（便于区分拦截页面来源） */
 function describeUpstreamErr(err) {
   const msg = err?.error?.message || err?.message || 'unknown'
@@ -238,10 +186,11 @@ async function handleAnthropicMessages(c, env, { body, resolved, hash }) {
 
   // 客户端传的 claude-sonnet-* 内置模型不认，一律用后台上游配置的模型
   const model = builtin.model || 'auto'
-  const messages = anthropicToMessages(parsed)
+  const params = anthropicRequest(parsed)
+  const messages = normalizeMessages(params)
   const id = 'msg_' + crypto.randomUUID().replace(/-/g, '')
   // 诊断摘要：请求体总字节 + 各消息编码后的长度分布（若再被 WAF 拦，可定位是哪一段漏编码）
-  const reqSummary = `reqLen=${body?.byteLength || 0},msgLens=${messages.map((m) => m.content.length).slice(0, 8).join('/')}`
+  const reqSummary = `reqLen=${body?.byteLength || 0},msgLens=${messages.map((m) => JSON.stringify(m.content).length).slice(0, 8).join('/')}`
 
   const t0 = Date.now()
   // errMsg 会并入 upstream 字段写进 usage_logs —— isolate 内存诊断不可靠（跨 PoP），
@@ -255,7 +204,7 @@ async function handleAnthropicMessages(c, env, { body, resolved, hash }) {
 
   let iter
   try {
-    iter = await createChatStream(env, { model, messages })
+    iter = await createChatStream(env, { ...params, model, messages })
   } catch (err) {
     logUpstreamError('anthropic.create', model, err)
     await finalize(null, true, describeUpstreamErr(err) + " | " + reqSummary)
@@ -263,9 +212,12 @@ async function handleAnthropicMessages(c, env, { body, resolved, hash }) {
   }
 
   // ---- 非流式 ----
-  if (parsed?.stream === false) {
+  if (parsed?.stream !== true) {
     let content = ''
     let usage = null
+    let finish = 'stop'
+    const tools = new ToolCalls()
+    let toolBlocks = []
     try {
       for await (const chunk of iter) {
         if (Date.now() - t0 > 45_000) {
@@ -274,8 +226,11 @@ async function handleAnthropicMessages(c, env, { body, resolved, hash }) {
         }
         const d = chunk.choices?.[0]?.delta
         if (d?.content) content += d.content
+        tools.add(d?.tool_calls)
+        if (chunk.choices?.[0]?.finish_reason) finish = chunk.choices[0].finish_reason
         if (chunk.usage) usage = chunk.usage
       }
+      toolBlocks = tools.blocks()
     } catch (err) {
       await finalize(usage, true, describeUpstreamErr(err) + " | " + reqSummary)
       return llmErrorResponse(err)
@@ -283,8 +238,8 @@ async function handleAnthropicMessages(c, env, { body, resolved, hash }) {
     await finalize(usage, false)
     return new Response(JSON.stringify({
       id, type: 'message', role: 'assistant', model,
-      content: [{ type: 'text', text: content }],
-      stop_reason: 'end_turn', stop_sequence: null,
+      content: [...(content ? [{ type: 'text', text: content }] : []), ...toolBlocks],
+      stop_reason: anthropicStop(finish, toolBlocks.length > 0), stop_sequence: null,
       usage: { input_tokens: usage?.prompt_tokens || 0, output_tokens: usage?.completion_tokens || 0 },
     }), {
       status: 200,
@@ -300,21 +255,38 @@ async function handleAnthropicMessages(c, env, { body, resolved, hash }) {
       let usage = null
       let failed = false
       let errLast = null
+      const tools = new ToolCalls()
+      let finish = 'stop'
+      let textStarted = false
       try {
         send('message_start', {
           type: 'message_start',
           message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } },
         })
-        send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
         for await (const chunk of iter) {
           const d = chunk.choices?.[0]?.delta
           if (d?.content) {
+            if (!textStarted) {
+              send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
+              textStarted = true
+            }
             send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: d.content } })
           }
+          tools.add(d?.tool_calls)
+          if (chunk.choices?.[0]?.finish_reason) finish = chunk.choices[0].finish_reason
           if (chunk.usage) usage = chunk.usage
         }
-        send('content_block_stop', { type: 'content_block_stop', index: 0 })
-        send('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: usage?.completion_tokens || 0 } })
+        if (textStarted) send('content_block_stop', { type: 'content_block_stop', index: 0 })
+        // Complete/validate each tool before exposing it for client execution.
+        const toolBlocks = tools.blocks()
+        let index = textStarted ? 1 : 0
+        for (const block of toolBlocks) {
+          send('content_block_start', { type: 'content_block_start', index, content_block: { ...block, input: {} } })
+          send('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input) } })
+          send('content_block_stop', { type: 'content_block_stop', index })
+          index++
+        }
+        send('message_delta', { type: 'message_delta', delta: { stop_reason: anthropicStop(finish, toolBlocks.length > 0), stop_sequence: null }, usage: { input_tokens: usage?.prompt_tokens || 0, output_tokens: usage?.completion_tokens || 0 } })
         send('message_stop', { type: 'message_stop' })
       } catch (err) {
         failed = true

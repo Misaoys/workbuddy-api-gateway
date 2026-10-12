@@ -9,9 +9,9 @@
  * 若你的部署环境不通过，可仅把网关 API 部署到这里、后台继续用原应用域名管理。
  */
 window.__WB_PUBLIC_CONFIG__ = {
-  endpoint: 'https://your-app.example.com',
+  endpoint: 'https://wb-gateway-admin.app.workbuddy.host',
   oauthRelayBaseUrl: 'https://www.workbuddy.cn/v2/as/genie-baas/oauth',
-  publishableKey: 'wbpk_YOUR_APP_ID_YOUR_KEY',
+  publishableKey: 'wbpk_JHOFOOEB8sZ4CcunCAE3Y1_yQzELWruC0F6I45WyJQVWnKAG3m5h9FW',
   // 网关对外访问地址（客户端接入用）；留空则回退当前页面域名
   gatewayBaseUrl: '',
 }

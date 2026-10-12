@@ -5,6 +5,7 @@
  * 因此后台改完配置即刻生效，无需重启服务。
  */
 import { logUsage, createChatStream } from './cloud.js'
+import { ToolCalls } from './protocol.js'
 
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -141,19 +142,25 @@ export function sanitizeContent(text) {
 }
 
 /** 云 LLM 要求 messages[0] 必须是 system；内容统一做 WAF 无害化 */
-function normalizeMessages(parsed) {
+export function normalizeMessages(parsed) {
   const raw = Array.isArray(parsed?.messages) ? parsed.messages : []
   const cleaned = []
   for (const m of raw) {
     if (!m || typeof m.role !== 'string') continue
     let content = m.content
-    if (typeof content !== 'string') content = content == null ? '' : JSON.stringify(content)
-    cleaned.push({ role: m.role, content: sanitizeContent(content) })
+    if (Array.isArray(content)) {
+      content = content.map((part) => part.type === 'text'
+        ? { ...part, text: sanitizeContent(part.text) } : part)
+    } else if (content != null) content = sanitizeContent(content)
+    else content = m.role === 'assistant' && m.tool_calls?.length ? null : ''
+    const message = { role: m.role, content }
+    for (const key of ['name', 'tool_call_id', 'tool_calls']) {
+      if (m[key] !== undefined) message[key] = m[key]
+    }
+    cleaned.push(message)
   }
   if (cleaned.length === 0 || cleaned[0].role !== 'system') {
     cleaned.unshift({ role: 'system', content: 'You are a helpful assistant. Be concise and helpful.' })
-  } else {
-    cleaned[0] = { ...cleaned[0], content: sanitizeContent(cleaned[0].content) }
   }
   return cleaned
 }
@@ -185,7 +192,7 @@ async function forwardBuiltin(env, { body, isStream, hash, upstream }) {
 
   let iter
   try {
-    iter = await createChatStream(env, { model, messages })
+    iter = await createChatStream(env, { ...parsed, model, messages })
   } catch (err) {
     await logUsage(env, { hash, model, status: err?.status || 502, latencyMs: Date.now() - startedAt, upstream: upstream.name })
     return llmErrorResponse(err)
@@ -197,6 +204,7 @@ async function forwardBuiltin(env, { body, isStream, hash, upstream }) {
     let reasoning = ''
     let finish = 'stop'
     let usage = null
+    const tools = new ToolCalls()
     try {
       for await (const chunk of iter) {
         // 边缘代理有 60s 硬超时，这里提前 45s 收口返回可读错误
@@ -207,6 +215,7 @@ async function forwardBuiltin(env, { body, isStream, hash, upstream }) {
         const d = chunk.choices?.[0]?.delta
         if (d?.content) content += d.content
         if (d?.reasoning_content) reasoning += d.reasoning_content
+        tools.add(d?.tool_calls)
         const f = chunk.choices?.[0]?.finish_reason
         if (f) finish = f
         if (chunk.usage) usage = chunk.usage
@@ -224,7 +233,12 @@ async function forwardBuiltin(env, { body, isStream, hash, upstream }) {
       upstream: upstream.name,
     })
 
-    const message = { role: 'assistant', content }
+    const toolCalls = tools.values()
+    const message = { role: 'assistant', content: content || (toolCalls.length ? null : '') }
+    if (toolCalls.length) {
+      message.tool_calls = toolCalls
+      if (finish === 'stop') finish = 'tool_calls'
+    }
     if (reasoning) message.reasoning_content = reasoning
     return new Response(JSON.stringify({
       id,

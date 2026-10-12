@@ -3,6 +3,7 @@ node_modules/
 
 # 构建产物
 dist/
+work/
 
 # Wrangler 本地状态（含账号信息，绝不提交）
 .wrangler/
