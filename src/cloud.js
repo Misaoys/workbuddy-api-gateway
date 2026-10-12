@@ -28,9 +28,21 @@ function getClient(env) {
 /** 校验 API Key 并取回该用户的上游配置；失败返回 { ok:false, reason } */
 export async function resolveKey(env, hash) {
   try {
-    const { data, error } = await getClient(env).database.rpc('gateway_resolve', { p_hash: hash })
-    if (error) return { ok: false, reason: 'backend_error', detail: error.message }
-    return data || { ok: false, reason: 'empty' }
+    const db = getClient(env).database
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { data, error, status } = await db.rpc('gateway_resolve', { p_hash: hash })
+      if (!error) return data || { ok: false, reason: 'empty' }
+
+      // The resolver is read-only, but its hash must stay in the POST body rather than the URL.
+      // The SDK only retries 503/520 for GET, so apply a short bounded retry here.
+      const aborted = /AbortError|ABORT_ERR/i.test(error.message || '')
+      const transient = !aborted && (status === 0 || status === 503 || status === 520)
+      if (!transient || attempt === 2) {
+        return { ok: false, reason: 'backend_error', detail: error.message }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)))
+    }
+    return { ok: false, reason: 'backend_error', detail: 'Key verification retry limit reached' }
   } catch (e) {
     return { ok: false, reason: 'backend_error', detail: e.message }
   }
