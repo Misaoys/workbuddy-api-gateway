@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API 网关管理台</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============================ 登录视图 ============================ -->
+<div id="authView" class="auth-wrap">
+  <div class="auth-card">
+    <h1>API 网关管理台</h1>
+    <div class="sub">登录后管理你的 API Key 与上游服务</div>
+
+    <div class="tabs">
+      <button id="tabPhone" class="active" type="button">手机号</button>
+      <button id="tabEmail" type="button">邮箱</button>
+    </div>
+
+    <div id="panePhone">
+      <label for="phoneInput">手机号</label>
+      <div class="row">
+        <input id="phoneInput" type="text" placeholder="11 位手机号" autocomplete="tel" inputmode="numeric">
+        <button id="sendPhoneCode" class="ghost" type="button">获取验证码</button>
+      </div>
+      <div id="phoneErr" class="field-err hidden"></div>
+      <label for="phoneCode">验证码</label>
+      <input id="phoneCode" type="text" placeholder="短信验证码" inputmode="numeric" autocomplete="one-time-code">
+      <button id="phoneLogin" class="primary" type="button">登录 / 注册</button>
+    </div>
+
+    <div id="paneEmail" class="hidden">
+      <label for="emailInput">邮箱</label>
+      <div class="row">
+        <input id="emailInput" type="email" placeholder="you@example.com" autocomplete="email">
+        <button id="sendEmailCode" class="ghost" type="button">获取验证码</button>
+      </div>
+      <label for="emailCode">验证码</label>
+      <input id="emailCode" type="text" placeholder="邮箱验证码" inputmode="numeric" autocomplete="one-time-code">
+      <label for="emailPassword">密码</label>
+      <input id="emailPassword" type="password" placeholder="首次注册需设置，老用户可留空" autocomplete="new-password">
+      <button id="emailLogin" class="primary" type="button">登录 / 注册</button>
+    </div>
+
+    <div class="msg" id="authMsg"></div>
+
+    <div style="margin-top:20px">
+      <button id="wechatLogin" class="ghost" style="width:100%" type="button">使用微信登录</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ 主视图 ============================ -->
+<div id="appView" class="hidden">
+  <div class="topbar">
+    <div class="brand">API 网关管理台</div>
+    <div>
+      <span class="who" id="whoami"></span>
+      <button class="btn-sm" id="signOut" type="button">退出登录</button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <nav class="side">
+      <button data-view="overview" class="active" type="button">概览</button>
+      <button data-view="keys" type="button">API Keys</button>
+      <button data-view="upstreams" type="button">上游配置</button>
+      <button data-view="models" type="button">可用模型</button>
+      <button data-view="usage" type="button">用量记录</button>
+    </nav>
+
+    <main class="main">
+
+      <!-- ---------------------- 概览 ---------------------- -->
+      <section id="view-overview">
+        <h2>概览</h2>
+        <div class="desc">你的网关运行状态与接入方式</div>
+
+        <div class="cards">
+          <div class="card"><div class="k">API Key 总数</div><div class="v" id="statKeys">-</div></div>
+          <div class="card"><div class="k">累计调用</div><div class="v" id="statCalls">-</div></div>
+          <div class="card"><div class="k">今日调用</div><div class="v" id="statToday">-</div></div>
+          <div class="card"><div class="k">启用上游</div><div class="v" id="statUpstreams">-</div></div>
+        </div>
+
+        <div class="panel">
+          <h3>接入方式 · 标准填法</h3>
+          <p class="hint" style="margin-top:0">
+            自建域名没有平台边缘代理，<strong>API Key 可以单独填在客户端自己的栏位里</strong>，地址保持纯净。
+          </p>
+          <div class="grid2">
+            <div>
+              <label>OpenAI 格式 · Base URL（OpenAI SDK / Cherry Studio 等）</label>
+              <div class="snippet" id="openaiBase">-</div>
+            </div>
+            <div>
+              <label>Anthropic 格式 · 请求地址（Claude Code / CCR）</label>
+              <div class="snippet" id="anthropicBase">-</div>
+            </div>
+          </div>
+          <div class="grid2" style="margin-top:14px">
+            <div>
+              <label>模型列表端点</label>
+              <div class="snippet" id="modelsUrl">-</div>
+            </div>
+            <div>
+              <label>API Key 填法</label>
+              <div class="snippet" id="keyHint">-</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>接入方式 · 地址式填法（兼容旧客户端）</h3>
+          <p class="hint" style="margin-top:0">
+            客户端不支持单独填 Key 时，把 Key 拼进地址即可（网关自动识别）。
+          </p>
+          <div class="grid2">
+            <div>
+              <label>把 &lt;你的Key&gt; 替换成实际密钥</label>
+              <div class="snippet" id="baseUrlSnippet">-</div>
+            </div>
+            <div>
+              <label>OpenAI 格式完整端点</label>
+              <div class="snippet" id="endpointSnippet">-</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>调用示例</h3>
+          <div class="snippet" id="curlSnippet">-</div>
+        </div>
+      </section>
+
+      <!-- ---------------------- API Keys ---------------------- -->
+      <section id="view-keys" class="hidden">
+        <h2>API Keys</h2>
+        <div class="desc">创建和管理调用网关的密钥。密钥明文只在创建时显示一次，请及时保存。</div>
+
+        <div class="panel">
+          <h3>创建新密钥</h3>
+          <div class="row">
+            <input id="newKeyName" type="text" placeholder="给它起个名字，例如：我的应用">
+            <button id="createKey" class="primary" style="width:auto" type="button">一键创建</button>
+          </div>
+        </div>
+
+        <div id="newKeyBox" class="newkey hidden">
+          <div class="warn">请立即复制保存 —— 关闭后将无法再次查看明文。复制后请核对：以 sk-wb- 开头、共 55 个字符。</div>
+          <div class="val">
+            <code id="newKeyValue"></code>
+            <button id="copyNewKey" class="btn-sm" type="button">复制</button>
+          </div>
+          <div style="margin-top:16px">
+            <label>客户端「请求地址」——直接复制这一整行</label>
+            <div class="val">
+              <code id="newKeyUrl"></code>
+              <button id="copyNewKeyUrl" class="btn-sm" type="button">复制</button>
+            </div>
+            <div class="hint">
+              填到 CC Switch / Claude Code 的「请求地址」栏；「API Key」栏填任意占位符即可（该栏内容会被平台代理拦截，网关不读取）。
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>密钥列表</h3>
+          <div id="keysTableWrap"><div class="empty">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ---------------------- 上游配置 ---------------------- -->
+      <section id="view-upstreams" class="hidden">
+        <h2>上游配置</h2>
+        <div class="desc">选择网关把请求转发到哪个模型。内置模型免密钥开箱即用，自定义服务需填自己的地址和 Key。</div>
+
+        <div class="panel">
+          <h3>添加上游</h3>
+
+          <label for="upKind">类型</label>
+          <select id="upKind">
+            <option value="builtin">内置 WorkBuddy 模型（免密钥，推荐）</option>
+            <option value="openai">自定义 OpenAI 兼容服务</option>
+          </select>
+          <div class="hint" style="margin-top:-10px;margin-bottom:14px">内置模型消耗你云服务的额度，无需申请任何第三方 Key</div>
+
+          <label for="upName">名称</label>
+          <input id="upName" type="text" placeholder="例如：内置模型">
+
+          <div id="upBuiltinFields">
+            <label for="upModel">默认模型</label>
+            <input id="upModel" type="text" placeholder="留空则使用 auto">
+            <div class="hint" style="margin-top:-10px;margin-bottom:14px">调用方在请求里传 model 时以调用方为准；这里是缺省值</div>
+          </div>
+
+          <div id="upOpenaiFields" class="hidden">
+            <label for="upBaseUrl">Base URL</label>
+            <input id="upBaseUrl" type="text" placeholder="https://api.deepseek.com/v1">
+            <div class="hint" style="margin-top:-10px;margin-bottom:14px">填到 /v1 为止，网关会自动拼接 /chat/completions</div>
+
+            <label for="upKeys">上游 API Keys</label>
+            <input id="upKeys" type="text" placeholder="多个用英文逗号分隔，例如：sk-a,sk-b">
+            <div class="hint" style="margin-top:-10px;margin-bottom:14px">配置多个 Key 会自动轮换分流</div>
+          </div>
+
+          <div class="grid2">
+            <div>
+              <label for="upWeight">权重</label>
+              <input id="upWeight" type="number" value="1" min="1">
+            </div>
+            <div>
+              <label for="upEnabled">状态</label>
+              <select id="upEnabled">
+                <option value="true">启用</option>
+                <option value="false">停用</option>
+              </select>
+            </div>
+          </div>
+
+          <button id="addUpstream" class="primary" type="button">保存上游</button>
+        </div>
+
+        <div class="panel">
+          <h3>已配置的上游</h3>
+          <div id="upstreamsTableWrap"><div class="empty">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ---------------------- 可用模型 ---------------------- -->
+      <section id="view-models" class="hidden">
+        <h2>可用模型</h2>
+        <div class="desc">内置上游可用的模型目录。调用方在请求里传 <code>model</code> 字段时，填这里的 id。</div>
+        <div class="panel">
+          <div id="modelsTableWrap"><div class="empty">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ---------------------- 用量记录 ---------------------- -->
+      <section id="view-usage" class="hidden">
+        <h2>用量记录</h2>
+        <div class="desc">最近 100 次调用明细</div>
+        <div class="panel">
+          <div id="usageTableWrap"><div class="empty">加载中…</div></div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@dev/lib/index.global.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

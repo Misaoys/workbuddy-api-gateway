@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+
+# Wrangler 本地状态（含账号信息，绝不提交）
+.wrangler/
+
+# 环境变量与密钥
+.env
+.env.*
+.dev.vars
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/
+*.log

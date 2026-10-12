@@ -1,0 +1,35 @@
+# WorkBuddy API Gateway —— Cloudflare Workers 部署配置
+#
+# 部署步骤：
+#   1. npm install
+#   2. npx wrangler login        # 浏览器授权 Cloudflare 账号
+#   3. 按下文注释填好 [vars] 与 routes
+#   4. npx wrangler deploy
+#
+# 绑定自定义域名需要该域名在本账号下管理（没有域名可删掉 routes，直接用 workers.dev 域名）。
+
+name = "wb-gateway"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 自定义域名（替换为你自己的域名；不需要可删除本段）
+routes = [
+  { pattern = "api.example.com", custom_domain = true }
+]
+
+# 后台管理界面（静态资源）
+[assets]
+directory = "./public"
+binding = "ASSETS"
+# Worker 先处理请求：网关路径都是动态的，静态资源找不到就不该由它接管
+run_worker_first = true
+
+[vars]
+# 云服务数据平面地址（WorkBuddy 应用域名，替换为你的）
+CLOUD_ENDPOINT = "https://your-app.example.com"
+# 应用公开标识（在 WorkBuddy 应用控制台获取；本身不带权限，服务端按 Origin 校验）
+CLOUD_PUBLISHABLE_KEY = "wbpk_YOUR_APP_ID_YOUR_KEY"
+
+[observability]
+enabled = true

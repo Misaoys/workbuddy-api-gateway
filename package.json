@@ -1,0 +1,24 @@
+{
+  "name": "workbuddy-api-gateway",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "把 WorkBuddy 云服务包装成 OpenAI / Anthropic 双协议兼容的 API 网关，部署在 Cloudflare Workers 上",
+  "license": "MIT",
+  "keywords": ["gateway", "openai", "anthropic", "claude-code", "cloudflare-workers", "api-proxy"],
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@tencent-ai/workbuddy-cloud-sdk": "dev",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "wrangler": "^4.42.0"
+  },
+  "optionalDependencies": {
+    "@cloudflare/workerd-windows-64": "^1.20261006.1",
+    "@esbuild/win32-x64": "^0.28.2"
+  }
+}
